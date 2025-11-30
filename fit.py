@@ -335,8 +335,8 @@ def part2():
     test_data = original_series.iloc[N_val_end:].copy()
 
     # --- 3. Run Experiment Loop ---
-    FORECAST_HORIZONS = [1, 5, 30]
-    MAX_K = 5
+    FORECAST_HORIZONS = [1]
+    MAX_K = 10
     final_results = []
 
     print(f"Running evaluation for horizons {FORECAST_HORIZONS} with K=1 to {MAX_K}...")
@@ -349,7 +349,7 @@ def part2():
         results_test = []
 
         # 1. Hyperparameter tuning loop for K (1 to 5)
-        for K in range(1, MAX_K + 1):
+        for K in range(5, MAX_K + 1):
             # --- Feature Engineering ---
             
             # Train Set
