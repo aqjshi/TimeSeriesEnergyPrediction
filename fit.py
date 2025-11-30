@@ -109,6 +109,22 @@ def process_data_and_get_stationary_splits(
     print(f"Data processing complete. Trend (slope: {slope:.4f}) fitted on Train.")
 
     return stationary_splits, slope, intercept, full_detrended_series
+def calculate_seasonal_period_from_acf(series, max_lag=336, skip_lags=24):
+    acf_values = acf(
+        series.dropna(), # Use .dropna() just in case, though detrended should be clean
+        nlags=max_lag,
+        alpha=None, # Only need the values, not confidence intervals
+        fft=True
+    )
+    seasonal_acf_range = acf_values[skip_lags + 1 : max_lag + 1] 
+
+    max_corr_index = np.argmax(np.abs(seasonal_acf_range))
+    
+    calculated_period = max_corr_index + (skip_lags + 1)
+    
+    return calculated_period
+
+
 
 def part1():
     """
@@ -136,64 +152,24 @@ def part1():
         time_index, time_series_data
     )
     linear_trend = slope * time_index + intercept
-    clean_df['detrended_univariate'] = time_series_data - linear_trend
+    clean_df['detrended_univariate'] = time_series_data - linear_trend # <-- Detrended series is created here
 
-    # ------------------------------------------------------------------
-    # NEW: SPECTRAL ANALYSIS TO DETECT SEASONALITY
-    # ------------------------------------------------------------------
-    print("Performing Spectral Analysis...")
-    
-    # 1. Get the detrended series (drop NaNs if any exist)
-    data_for_spectrum = clean_df['detrended_univariate'].dropna().values
-    
-    # 2. Compute the Periodogram (Frequencies vs Power)
-    frequencies, spectrum = periodogram(data_for_spectrum)
-    
-    # 3. Apply Offset: specific request to offset by 24.
-    # We zero out the first 24 components (low frequencies/long periods) 
-    # to avoid picking up residual trends or very long cycles.
-    spectrum[0:24] = 0
-    
-    # 4. Find the index with the maximum power
-    max_idx = np.argmax(spectrum)
-    dominant_freq = frequencies[max_idx]
-    
-    # 5. Convert Frequency to Period (T = 1 / f)
-    if dominant_freq > 0:
-        calculated_period = int(round(1 / dominant_freq))
-    else:
-        calculated_period = 1 
+    # --- Dynamic Seasonal Period Detection (NEW LOGIC) ---
+    nlags_to_check = 336
+    skip_lags = 24 # Ignore the first 24 hours (up to daily noise)
 
-    # ------------------------------------------------------------------
-    # FIX: HARMONIC CHECK USING ACF
-    # ------------------------------------------------------------------
-    # Calculate ACF specifically to validate the period
-    # We look at the detected period. If ACF is negative, it's likely a half-cycle.
-    check_acf = acf(clean_df['detrended_univariate'].dropna(), nlags=calculated_period * 2, fft=True)
-    
-    # Get correlation at the detected period
-    corr_at_period = check_acf[calculated_period]
-    
-    print(f"Spectral detected period: {calculated_period} (ACF value: {corr_at_period:.2f})")
+    # Calculate the period using ACF on the detrended series
+    calculated_period = calculate_seasonal_period_from_acf(
+        clean_df['detrended_univariate'], 
+        max_lag=nlags_to_check, 
+        skip_lags=skip_lags
+    )
 
-    if corr_at_period < 0.2: 
-        # If correlation is negative (like -0.6) or very weak, check 2x the period
-        alt_period = calculated_period * 2
-        if alt_period < len(check_acf):
-            corr_at_alt = check_acf[alt_period]
-            print(f"Checking alternative period {alt_period}... (ACF value: {corr_at_alt:.2f})")
-            
-            if corr_at_alt > corr_at_period and corr_at_alt > 0.2:
-                print(f"Correcting Seasonal Period from {calculated_period} to {alt_period}")
-                calculated_period = alt_period
-    
-    # ------------------------------------------------------------------
-
-    # 6. Update the Global Variable
+    # Assign the dynamically calculated period to the global variable
     SEASONAL_PERIOD = calculated_period
-
-    print(f"Most likely Seasonal Period Detected: {SEASONAL_PERIOD}")
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------
+    
+    print(f"Most likely Seasonal Period Detected: {SEASONAL_PERIOD}") # Now SEASONAL_PERIOD is dynamic
 
     # Continue with the rest of the script using the detected period
     clean_df['detrended_deseasonalized'] = (
@@ -203,8 +179,10 @@ def part1():
 
     # Drop the NaNs created by the differencing step for the ACF calculation
     final_stationary_series = clean_df['detrended_deseasonalized'].dropna()
-    nlags=336
-    # Calculate ACF on the fully transformed series
+
+    # Calculate ACF on the fully transformed series (for plotting only)
+    # The nlags for this final plot is now derived from the variable
+    nlags=nlags_to_check # Keeping nlags=336 for consistency in the plot
     stationary_acf_values, confint = acf(
         final_stationary_series,
         nlags=nlags,
@@ -241,7 +219,7 @@ def part1():
     sarima_params = {
         "slope": slope,
         "intercept": intercept,
-        "seasonal_period": SEASONAL_PERIOD
+        "seasonal_period": (int(SEASONAL_PERIOD))
     }
 
     # Define the filename
@@ -329,7 +307,7 @@ def part2():
 
     # --- 1. Load Data and Parameters ---
     clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='h')
-    
+        
     original_series = clean_df[ORIGINAL_COL]
 
     with open("sarima_params.json", 'r') as f:
