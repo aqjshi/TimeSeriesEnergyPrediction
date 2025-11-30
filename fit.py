@@ -244,194 +244,192 @@ def part1():
     print(f"Val Usable Samples: {len(stationary_splits['val'])}")
     print(f"Test Usable Samples: {len(stationary_splits['test'])}")
 
+
+
+def create_fourier_ar_features(data_series: pd.Series, period: int, lag_step: int = 1, n_fourier_pairs: int = 1) -> pd.DataFrame:
+    features = pd.DataFrame({'Y_target': data_series.values}, index=data_series.index)
+    
+    # Y_target starts after the first 'lag_step' entries, as they have no AR feature
+    Y_target = features['Y_target'].iloc[lag_step:]
+    
+    X_df = pd.DataFrame(index=Y_target.index)
+    
+    # 1. Time trend feature
+    # Note: Using the integer index value of the time series for 't'
+    X_df['t'] = Y_target.index.values - 1 
+    
+    # 2. Fourier features
+    omega = 2 * np.pi / period
+    for k in range(1, n_fourier_pairs + 1):
+        X_df[f'sin_t_{k}'] = np.sin(k * omega * X_df['t'])
+        X_df[f'cos_t_{k}'] = np.cos(k * omega * X_df['t'])
+        
+    # 3. Autoregressive (AR) feature
+    # The AR feature uses the value L steps prior: Y_t-L
+    X_df[f'Y_t-{lag_step}'] = data_series.shift(lag_step).loc[Y_target.index]
+    
+    return X_df, Y_target
+
+def evaluate_set(X_set, Y_set, name, history_series, lag, model):
+    """
+    Evaluates model predictions against a naive baseline for a given dataset.
+    """
+    Y_pred = model.predict(X_set)
+    
+    # Naive L-step prediction: Y_t = Y_t-L
+    naive_preds = Y_set.shift(lag)
+    
+    # Correctly seed the first prediction using the history series
+    # Find the index 'lag' steps before the start of Y_set
+    seed_index = Y_set.index[0] - lag
+    naive_preds.iloc[0] = history_series.loc[seed_index]
+    
+    # Get indices where naive forecast is valid (after the initial seed)
+    valid_indices = naive_preds.dropna().index
+    
+    Y_set_eval = Y_set.loc[valid_indices]
+    
+    # Y_pred is already aligned to Y_set, so we filter it based on valid_indices
+    # This ensures we are comparing the exact same set of predictions
+    Y_pred_eval = Y_pred[Y_set.index.isin(valid_indices)]
+    naive_preds_eval = naive_preds.loc[valid_indices]
+    
+    # Model Metrics
+    model_mae = mean_absolute_error(Y_set_eval, Y_pred_eval)
+    model_mse = mean_squared_error(Y_set_eval, Y_pred_eval)
+    model_rmse = np.sqrt(model_mse)
+    
+    # Naive Metrics
+    naive_mae = mean_absolute_error(Y_set_eval, naive_preds_eval)
+    naive_mse = mean_squared_error(Y_set_eval, naive_preds_eval)
+    naive_rmse = np.sqrt(naive_mse)
+    
+    metrics = {
+        'model_mae': model_mae, 'model_mse': model_mse, 'model_rmse': model_rmse,
+        'naive_mae': naive_mae, 'naive_mse': naive_mse, 'naive_rmse': naive_rmse
+    }
+    return metrics, Y_pred_eval, Y_set_eval, naive_preds_eval
+
+def part2():
+    """
+    Main function to run the Fourier-AR model evaluation pipeline.
+    """
+    # --- 1. Load Data and Parameters ---
+    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
+    
+    original_series = clean_df[ORIGINAL_COL]
+
+    with open("sarima_params.json", 'r') as f:
+        sarima_params = json.load(f)
+    SARIMA_PERIOD = sarima_params.get('seasonal_period', 753)
+
+    # --- 2. Split Data ---
+    N_total = len(original_series)
+    TRAIN_RATIO = .7
+    VAL_RATIO = .2
+    N_train_end = int(N_total * TRAIN_RATIO)
+    N_val_end = int(N_total * (TRAIN_RATIO + VAL_RATIO))
+    
+    train_data = original_series.iloc[0:N_train_end].copy()
+    val_data = original_series.iloc[N_train_end:N_val_end].copy()
+    test_data = original_series.iloc[N_val_end:].copy()
+
+    # --- 3. Run Experiment Loop ---
+    FORECAST_HORIZONS = [1, 5, 30]
+    MAX_K = 5
+    final_results = []
+
+    print(f"Running evaluation for horizons {FORECAST_HORIZONS} with K=1 to {MAX_K}...")
+
+    for L in FORECAST_HORIZONS:
+        # Set the current LAG equal to the forecast horizon L
+        current_LAG = L
+        
+        results_val = []
+        results_test = []
+
+        # 1. Hyperparameter tuning loop for K (1 to 5)
+        for K in range(1, MAX_K + 1):
+            # --- Feature Engineering ---
+            
+            # Train Set
+            X_train, Y_train = create_fourier_ar_features(train_data, SARIMA_PERIOD, current_LAG, K)
+            
+            # Validation Set (needs LAG history from train)
+            val_and_history = original_series.loc[train_data.index[-current_LAG]:]
+            X_val, Y_val = create_fourier_ar_features(val_and_history, SARIMA_PERIOD, current_LAG, K)
+            # Filter to only the validation set indices
+            X_val = X_val.loc[val_data.index]
+            Y_val = Y_val.loc[val_data.index]
+            
+            # Test Set (needs LAG history from val)
+            test_and_history = original_series.loc[val_data.index[-current_LAG]:]
+            X_test, Y_test = create_fourier_ar_features(test_and_history, SARIMA_PERIOD, current_LAG, K)
+            # Filter to only the test set indices
+            X_test = X_test.loc[test_data.index]
+            Y_test = Y_test.loc[test_data.index]
+            
+            # --- Model Training and Evaluation ---
+            model = Ridge(alpha=1.0) 
+            model.fit(X_train, Y_train)
+            
+            # Evaluate on Val
+            # For evaluation, the history for the naive forecast is the preceding set (train_data)
+            val_metrics, _, _, _ = evaluate_set(X_val, Y_val, "", train_data, current_LAG, model)
+            val_metrics['K'] = K
+            results_val.append(val_metrics)
+            
+            # Evaluate on Test
+            # For evaluation, the history for the naive forecast is the preceding set (val_data)
+            test_metrics, _, _, _ = evaluate_set(X_test, Y_test, "", val_data, current_LAG, model)
+            test_metrics['K'] = K
+            results_test.append(test_metrics)
+
+        val_df = pd.DataFrame(results_val)
+        test_df = pd.DataFrame(results_test)
+        
+        # 2. Find the best K based on Validation RMSE
+        best_k_row = val_df.iloc[val_df['model_rmse'].argmin()]
+        best_k = int(best_k_row['K'])
+
+        # 3. Retrieve the metrics for the best K from the Test set
+        best_test_metrics = test_df[test_df['K'] == best_k].iloc[0].to_dict()
+        
+        # Also get the Naive Baseline (which is the same across all K for a given L)
+        naive_metrics = test_df.iloc[0].to_dict()
+        
+        final_results.append({
+            'Forecast_Horizon_L': L,
+            'Best_K_by_Val': best_k,
+            'Model_MAE': round(best_test_metrics['model_mae'], 2),
+            'Model_MSE': round(best_test_metrics['model_mse'], 2),
+            'Model_RMSE': round(best_test_metrics['model_rmse'], 2),
+            'Naive_MAE': round(naive_metrics['naive_mae'], 2),
+            'Naive_MSE': round(naive_metrics['naive_mse'], 2),
+            'Naive_RMSE': round(naive_metrics['naive_rmse'], 2)
+        })
+
+    # --- 4. Display Final Results ---
+    results_df = pd.DataFrame(final_results).set_index('Forecast_Horizon_L')
+    print("\n--- Final Results Table ---")
+    print(results_df)
+
+    # Display best K values for clarity
+    best_k_df = results_df[['Best_K_by_Val']].copy().rename(columns={'Best_K_by_Val': 'Optimal Fourier Pairs (K)'})
+    print("\n--- Optimal K per Horizon ---")
+    print(best_k_df)
+
+
+
+
 if __name__ == "__main__":
     part1()
-    # part2()
+    part2()
     # part3()
     # part4()
 
 
-# def create_fourier_ar_features(data_series: pd.Series, period: int, lag_step: int = 1, n_fourier_pairs: int = 1) -> pd.DataFrame:
-#     """
-#     Creates feature matrix (X) and target vector (Y) for a given time series.
-    
-#     X includes:
-#     - Time index ('t')
-#     - Fourier series terms (sin, cos) based on 'period' and 'n_fourier_pairs'
-#     - An autoregressive term ('Y_t-L') based on 'lag_step'
-    
-#     Y is the target value 'Y_t'.
-#     """
-#     features = pd.DataFrame({'Y_target': data_series.values}, index=data_series.index)
-    
-#     # Y_target starts after the first 'lag_step' entries, as they have no AR feature
-#     Y_target = features['Y_target'].iloc[lag_step:]
-    
-#     X_df = pd.DataFrame(index=Y_target.index)
-    
-#     # 1. Time trend feature
-#     # Note: Using the integer index value of the time series for 't'
-#     X_df['t'] = Y_target.index.values - 1 
-    
-#     # 2. Fourier features
-#     omega = 2 * np.pi / period
-#     for k in range(1, n_fourier_pairs + 1):
-#         X_df[f'sin_t_{k}'] = np.sin(k * omega * X_df['t'])
-#         X_df[f'cos_t_{k}'] = np.cos(k * omega * X_df['t'])
-        
-#     # 3. Autoregressive (AR) feature
-#     # The AR feature uses the value L steps prior: Y_t-L
-#     X_df[f'Y_t-{lag_step}'] = data_series.shift(lag_step).loc[Y_target.index]
-    
-#     return X_df, Y_target
 
-# def evaluate_set(X_set, Y_set, name, history_series, lag, model):
-#     """
-#     Evaluates model predictions against a naive baseline for a given dataset.
-#     """
-#     Y_pred = model.predict(X_set)
-    
-#     # Naive L-step prediction: Y_t = Y_t-L
-#     naive_preds = Y_set.shift(lag)
-    
-#     # Correctly seed the first prediction using the history series
-#     # Find the index 'lag' steps before the start of Y_set
-#     seed_index = Y_set.index[0] - lag
-#     naive_preds.iloc[0] = history_series.loc[seed_index]
-    
-#     # Get indices where naive forecast is valid (after the initial seed)
-#     valid_indices = naive_preds.dropna().index
-    
-#     Y_set_eval = Y_set.loc[valid_indices]
-    
-#     # Y_pred is already aligned to Y_set, so we filter it based on valid_indices
-#     # This ensures we are comparing the exact same set of predictions
-#     Y_pred_eval = Y_pred[Y_set.index.isin(valid_indices)]
-#     naive_preds_eval = naive_preds.loc[valid_indices]
-    
-#     # Model Metrics
-#     model_mae = mean_absolute_error(Y_set_eval, Y_pred_eval)
-#     model_mse = mean_squared_error(Y_set_eval, Y_pred_eval)
-#     model_rmse = np.sqrt(model_mse)
-    
-#     # Naive Metrics
-#     naive_mae = mean_absolute_error(Y_set_eval, naive_preds_eval)
-#     naive_mse = mean_squared_error(Y_set_eval, naive_preds_eval)
-#     naive_rmse = np.sqrt(naive_mse)
-    
-#     metrics = {
-#         'model_mae': model_mae, 'model_mse': model_mse, 'model_rmse': model_rmse,
-#         'naive_mae': naive_mae, 'naive_mse': naive_mse, 'naive_rmse': naive_rmse
-#     }
-#     return metrics, Y_pred_eval, Y_set_eval, naive_preds_eval
-
-# def part2():
-#     """
-#     Main function to run the Fourier-AR model evaluation pipeline.
-#     """
-#     # --- 1. Load Data and Parameters ---
-#     airport_df = pd.read_csv("AirportFootfalls_data.csv").set_index('index')
-#     original_series = airport_df[ORIGINAL_COL]
-
-#     with open("sarima_params.json", 'r') as f:
-#         sarima_params = json.load(f)
-#     SARIMA_PERIOD = sarima_params.get('seasonal_period', 753)
-
-#     # --- 2. Split Data ---
-#     N_total = len(original_series)
-#     TRAIN_RATIO = .7
-#     VAL_RATIO = .2
-#     N_train_end = int(N_total * TRAIN_RATIO)
-#     N_val_end = int(N_total * (TRAIN_RATIO + VAL_RATIO))
-    
-#     train_data = original_series.iloc[0:N_train_end].copy()
-#     val_data = original_series.iloc[N_train_end:N_val_end].copy()
-#     test_data = original_series.iloc[N_val_end:].copy()
-
-#     # --- 3. Run Experiment Loop ---
-#     FORECAST_HORIZONS = [1, 5, 30]
-#     MAX_K = 5
-#     final_results = []
-
-#     print(f"Running evaluation for horizons {FORECAST_HORIZONS} with K=1 to {MAX_K}...")
-
-#     for L in FORECAST_HORIZONS:
-#         # Set the current LAG equal to the forecast horizon L
-#         current_LAG = L
-        
-#         results_val = []
-#         results_test = []
-
-#         # 1. Hyperparameter tuning loop for K (1 to 5)
-#         for K in range(1, MAX_K + 1):
-#             # --- Feature Engineering ---
-            
-#             # Train Set
-#             X_train, Y_train = create_fourier_ar_features(train_data, SARIMA_PERIOD, current_LAG, K)
-            
-#             # Validation Set (needs LAG history from train)
-#             val_and_history = original_series.loc[train_data.index[-current_LAG]:]
-#             X_val, Y_val = create_fourier_ar_features(val_and_history, SARIMA_PERIOD, current_LAG, K)
-#             # Filter to only the validation set indices
-#             X_val = X_val.loc[val_data.index]
-#             Y_val = Y_val.loc[val_data.index]
-            
-#             # Test Set (needs LAG history from val)
-#             test_and_history = original_series.loc[val_data.index[-current_LAG]:]
-#             X_test, Y_test = create_fourier_ar_features(test_and_history, SARIMA_PERIOD, current_LAG, K)
-#             # Filter to only the test set indices
-#             X_test = X_test.loc[test_data.index]
-#             Y_test = Y_test.loc[test_data.index]
-            
-#             # --- Model Training and Evaluation ---
-#             model = Ridge(alpha=1.0) 
-#             model.fit(X_train, Y_train)
-            
-#             # Evaluate on Val
-#             # For evaluation, the history for the naive forecast is the preceding set (train_data)
-#             val_metrics, _, _, _ = evaluate_set(X_val, Y_val, "", train_data, current_LAG, model)
-#             val_metrics['K'] = K
-#             results_val.append(val_metrics)
-            
-#             # Evaluate on Test
-#             # For evaluation, the history for the naive forecast is the preceding set (val_data)
-#             test_metrics, _, _, _ = evaluate_set(X_test, Y_test, "", val_data, current_LAG, model)
-#             test_metrics['K'] = K
-#             results_test.append(test_metrics)
-
-#         val_df = pd.DataFrame(results_val)
-#         test_df = pd.DataFrame(results_test)
-        
-#         # 2. Find the best K based on Validation RMSE
-#         best_k_row = val_df.iloc[val_df['model_rmse'].argmin()]
-#         best_k = int(best_k_row['K'])
-
-#         # 3. Retrieve the metrics for the best K from the Test set
-#         best_test_metrics = test_df[test_df['K'] == best_k].iloc[0].to_dict()
-        
-#         # Also get the Naive Baseline (which is the same across all K for a given L)
-#         naive_metrics = test_df.iloc[0].to_dict()
-        
-#         final_results.append({
-#             'Forecast_Horizon_L': L,
-#             'Best_K_by_Val': best_k,
-#             'Model_MAE': round(best_test_metrics['model_mae'], 2),
-#             'Model_MSE': round(best_test_metrics['model_mse'], 2),
-#             'Model_RMSE': round(best_test_metrics['model_rmse'], 2),
-#             'Naive_MAE': round(naive_metrics['naive_mae'], 2),
-#             'Naive_MSE': round(naive_metrics['naive_mse'], 2),
-#             'Naive_RMSE': round(naive_metrics['naive_rmse'], 2)
-#         })
-
-#     # --- 4. Display Final Results ---
-#     results_df = pd.DataFrame(final_results).set_index('Forecast_Horizon_L')
-#     print("\n--- Final Results Table ---")
-#     print(results_df)
-
-#     # Display best K values for clarity
-#     best_k_df = results_df[['Best_K_by_Val']].copy().rename(columns={'Best_K_by_Val': 'Optimal Fourier Pairs (K)'})
-#     print("\n--- Optimal K per Horizon ---")
-#     print(best_k_df)
 
 # def create_fourier_covariates(series: TimeSeries, period: float, K: int) -> TimeSeries:
 #     """
