@@ -269,13 +269,8 @@ def create_fourier_ar_features(data_series: pd.Series, period: int, lag_step: in
 
 def evaluate_set(X_set, Y_set, name, history_series, lag, model):
     Y_pred = model.predict(X_set)
-    
-    # Naive L-step prediction: Y_t = Y_t-L
     naive_preds = Y_set.shift(lag)
     
-    # --- FIX START ---
-    # Correctly seed the first prediction using the history series
-    # We use pd.Timedelta because we cannot subtract an integer from a Timestamp anymore
     seed_index = Y_set.index[0] - pd.Timedelta(hours=lag)
     # --- FIX END ---
 
@@ -414,42 +409,42 @@ def part2():
     print(best_k_df)
 
 
+def create_fourier_covariates(series: TimeSeries, period: float, K: int) -> TimeSeries:
+    """
+    Generates Fourier series covariates based on the series' time index.
+    """
+    time_index = series.time_index
+    t = np.arange(len(time_index))
+    fourier_df = pd.DataFrame(index=time_index)
+    
+    for k in range(1, K + 1):
+        omega = 2 * np.pi * k / period
+        sin_col = np.sin(omega * t)
+        cos_col = np.cos(omega * t)
+        fourier_df[f'sin_{k}_p{period}'] = sin_col
+        fourier_df[f'cos_{k}_p{period}'] = cos_col
+        
+    return TimeSeries.from_dataframe(fourier_df)
+
+def create_trend_covariate(series: TimeSeries) -> TimeSeries:
+    """
+    Generates a raw, unscaled linear trend covariate.
+    """
+    time_index = series.time_index
+    trend = np.arange(len(time_index)) 
+    trend_df = pd.DataFrame(index=time_index, data={'linear_trend': trend})
+    return TimeSeries.from_dataframe(trend_df)
+
+
 
 
 if __name__ == "__main__":
     part1()
     part2()
-    # part3()
+    part3()
     # part4()
 
 
-
-
-# def create_fourier_covariates(series: TimeSeries, period: float, K: int) -> TimeSeries:
-#     """
-#     Generates Fourier series covariates based on the series' time index.
-#     """
-#     time_index = series.time_index
-#     t = np.arange(len(time_index))
-#     fourier_df = pd.DataFrame(index=time_index)
-    
-#     for k in range(1, K + 1):
-#         omega = 2 * np.pi * k / period
-#         sin_col = np.sin(omega * t)
-#         cos_col = np.cos(omega * t)
-#         fourier_df[f'sin_{k}_p{period}'] = sin_col
-#         fourier_df[f'cos_{k}_p{period}'] = cos_col
-        
-#     return TimeSeries.from_dataframe(fourier_df)
-
-# def create_trend_covariate(series: TimeSeries) -> TimeSeries:
-#     """
-#     Generates a raw, unscaled linear trend covariate.
-#     """
-#     time_index = series.time_index
-#     trend = np.arange(len(time_index)) 
-#     trend_df = pd.DataFrame(index=time_index, data={'linear_trend': trend})
-#     return TimeSeries.from_dataframe(trend_df)
 
 
 # def part3():
