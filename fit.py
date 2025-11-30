@@ -336,7 +336,7 @@ def part2():
 
     # --- 3. Run Experiment Loop ---
     FORECAST_HORIZONS = [1]
-    MAX_K = 10
+    MAX_K =5
     final_results = []
 
     print(f"Running evaluation for horizons {FORECAST_HORIZONS} with K=1 to {MAX_K}...")
@@ -349,7 +349,7 @@ def part2():
         results_test = []
 
         # 1. Hyperparameter tuning loop for K (1 to 5)
-        for K in range(5, MAX_K + 1):
+        for K in range(1, MAX_K + 1):
             # --- Feature Engineering ---
             
             # Train Set
@@ -424,7 +424,7 @@ def part2():
 
 if __name__ == "__main__":
     part1()
-    part2()
+    # part2()
     # part3()
     # part4()
 
