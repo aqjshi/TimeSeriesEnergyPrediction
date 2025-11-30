@@ -117,7 +117,7 @@ def part1():
     global SEASONAL_PERIOD # Use the global variable so it updates for the whole script
 
     # --- Part 1: Initial Load and ACF Plotting ---
-    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
+    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='h')
     
     time_series = clean_df[ORIGINAL_COL]
 
@@ -254,11 +254,8 @@ def create_fourier_ar_features(data_series: pd.Series, period: int, lag_step: in
     
     X_df = pd.DataFrame(index=Y_target.index)
     
-    # 1. Time trend feature
-    # Note: Using the integer index value of the time series for 't'
-    X_df['t'] = Y_target.index.values - 1 
-    
-    # 2. Fourier features
+    X_df['t'] = (Y_target.index - pd.Timestamp("1970-01-01")) // pd.Timedelta("1h")
+
     omega = 2 * np.pi / period
     for k in range(1, n_fourier_pairs + 1):
         X_df[f'sin_t_{k}'] = np.sin(k * omega * X_df['t'])
@@ -271,17 +268,17 @@ def create_fourier_ar_features(data_series: pd.Series, period: int, lag_step: in
     return X_df, Y_target
 
 def evaluate_set(X_set, Y_set, name, history_series, lag, model):
-    """
-    Evaluates model predictions against a naive baseline for a given dataset.
-    """
     Y_pred = model.predict(X_set)
     
     # Naive L-step prediction: Y_t = Y_t-L
     naive_preds = Y_set.shift(lag)
     
+    # --- FIX START ---
     # Correctly seed the first prediction using the history series
-    # Find the index 'lag' steps before the start of Y_set
-    seed_index = Y_set.index[0] - lag
+    # We use pd.Timedelta because we cannot subtract an integer from a Timestamp anymore
+    seed_index = Y_set.index[0] - pd.Timedelta(hours=lag)
+    # --- FIX END ---
+
     naive_preds.iloc[0] = history_series.loc[seed_index]
     
     # Get indices where naive forecast is valid (after the initial seed)
@@ -290,7 +287,6 @@ def evaluate_set(X_set, Y_set, name, history_series, lag, model):
     Y_set_eval = Y_set.loc[valid_indices]
     
     # Y_pred is already aligned to Y_set, so we filter it based on valid_indices
-    # This ensures we are comparing the exact same set of predictions
     Y_pred_eval = Y_pred[Y_set.index.isin(valid_indices)]
     naive_preds_eval = naive_preds.loc[valid_indices]
     
@@ -310,18 +306,19 @@ def evaluate_set(X_set, Y_set, name, history_series, lag, model):
     }
     return metrics, Y_pred_eval, Y_set_eval, naive_preds_eval
 
+
+
+
 def part2():
-    """
-    Main function to run the Fourier-AR model evaluation pipeline.
-    """
+
     # --- 1. Load Data and Parameters ---
-    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
+    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='h')
     
     original_series = clean_df[ORIGINAL_COL]
 
     with open("sarima_params.json", 'r') as f:
         sarima_params = json.load(f)
-    SARIMA_PERIOD = sarima_params.get('seasonal_period', 753)
+    SARIMA_PERIOD = sarima_params.get('seasonal_period', 1440)
 
     # --- 2. Split Data ---
     N_total = len(original_series)
@@ -350,9 +347,6 @@ def part2():
 
         # 1. Hyperparameter tuning loop for K (1 to 5)
         for K in range(1, MAX_K + 1):
-            # --- Feature Engineering ---
-            
-            # Train Set
             X_train, Y_train = create_fourier_ar_features(train_data, SARIMA_PERIOD, current_LAG, K)
             
             # Validation Set (needs LAG history from train)
@@ -424,7 +418,7 @@ def part2():
 
 if __name__ == "__main__":
     part1()
-    # part2()
+    part2()
     # part3()
     # part4()
 
