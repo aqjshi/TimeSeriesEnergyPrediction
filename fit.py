@@ -159,17 +159,39 @@ def part1():
     dominant_freq = frequencies[max_idx]
     
     # 5. Convert Frequency to Period (T = 1 / f)
-    # We define a local variable 'seasonal_period' and update the Global
     if dominant_freq > 0:
         calculated_period = int(round(1 / dominant_freq))
     else:
-        calculated_period = 1 # Fallback if frequency is 0 (unlikely after offset)
+        calculated_period = 1 
+
+    # ------------------------------------------------------------------
+    # FIX: HARMONIC CHECK USING ACF
+    # ------------------------------------------------------------------
+    # Calculate ACF specifically to validate the period
+    # We look at the detected period. If ACF is negative, it's likely a half-cycle.
+    check_acf = acf(clean_df['detrended_univariate'].dropna(), nlags=calculated_period * 2, fft=True)
+    
+    # Get correlation at the detected period
+    corr_at_period = check_acf[calculated_period]
+    
+    print(f"Spectral detected period: {calculated_period} (ACF value: {corr_at_period:.2f})")
+
+    if corr_at_period < 0.2: 
+        # If correlation is negative (like -0.6) or very weak, check 2x the period
+        alt_period = calculated_period * 2
+        if alt_period < len(check_acf):
+            corr_at_alt = check_acf[alt_period]
+            print(f"Checking alternative period {alt_period}... (ACF value: {corr_at_alt:.2f})")
+            
+            if corr_at_alt > corr_at_period and corr_at_alt > 0.2:
+                print(f"Correcting Seasonal Period from {calculated_period} to {alt_period}")
+                calculated_period = alt_period
+    
+    # ------------------------------------------------------------------
 
     # 6. Update the Global Variable
     SEASONAL_PERIOD = calculated_period
-    
-    # 7. Print the result
-    print(f"Spectral Analysis Complete. Offset: 24.")
+
     print(f"Most likely Seasonal Period Detected: {SEASONAL_PERIOD}")
     # ------------------------------------------------------------------
 
@@ -181,13 +203,12 @@ def part1():
 
     # Drop the NaNs created by the differencing step for the ACF calculation
     final_stationary_series = clean_df['detrended_deseasonalized'].dropna()
-    nlags = min(2 * SEASONAL_PERIOD, len(final_stationary_series) // 2 - 1) # Safety check for nlags
-
+    nlags=336
     # Calculate ACF on the fully transformed series
     stationary_acf_values, confint = acf(
         final_stationary_series,
         nlags=nlags,
-        alpha=0.05,
+        alpha=0.01,
         fft=True
     )
 
@@ -328,7 +349,7 @@ def part2():
 
     # --- 3. Run Experiment Loop ---
     FORECAST_HORIZONS = [1]
-    MAX_K =5
+    MAX_K =10
     final_results = []
 
     print(f"Running evaluation for horizons {FORECAST_HORIZONS} with K=1 to {MAX_K}...")
@@ -397,7 +418,19 @@ def part2():
             'Naive_MSE': round(naive_metrics['naive_mse'], 2),
             'Naive_RMSE': round(naive_metrics['naive_rmse'], 2)
         })
+        val_df = pd.DataFrame(results_val)
+        test_df = pd.DataFrame(results_test)
 
+        # --- ADD THIS BLOCK TO SEE ALL K VALUES ---
+        print(f"\n--- Detailed Results for Horizon L={L} (All K values) ---")
+        # specific_columns = ['K', 'model_rmse', 'model_mae', 'naive_rmse'] # Optional: select specific columns to keep it clean
+        # print(test_df[specific_columns]) 
+        print(test_df) 
+        # ------------------------------------------
+
+        # 2. Find the best K based on Validation RMSE
+        best_k_row = val_df.iloc[val_df['model_rmse'].argmin()]
+        best_k = int(best_k_row['K'])
     # --- 4. Display Final Results ---
     results_df = pd.DataFrame(final_results).set_index('Forecast_Horizon_L')
     print("\n--- Final Results Table ---")
@@ -441,7 +474,7 @@ def create_trend_covariate(series: TimeSeries) -> TimeSeries:
 if __name__ == "__main__":
     part1()
     part2()
-    part3()
+    # part3()
     # part4()
 
 
