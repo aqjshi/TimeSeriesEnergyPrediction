@@ -29,16 +29,14 @@ VAL_RATIO = 0.20
 
 
 def apply_sarima_transform(
-    df: pd.DataFrame,
-    start_index: int,
-    slope: float,
-    intercept: float,
-    seasonal_period: int,
-    prev_univariate_history: pd.Series = None
-) -> None:
-    """Applies detrending and seasonal differencing with history stitching."""
+        df: pd.DataFrame,
+        start_index: int,
+        slope: float,
+        intercept: float,
+        seasonal_period: int,
+        prev_univariate_history: pd.Series = None
+    ) -> None:
 
-    # 1. Detrending
     time_index = np.arange(start_index, start_index + len(df))
     df['detrended_univariate'] = df[ORIGINAL_COL] - (slope * time_index + intercept)
 
@@ -113,21 +111,17 @@ def part1():
     Main function to run the time series analysis pipeline.
     """
     # --- Part 1: Initial Load and ACF Plotting ---
-    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='D')
+    clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
     
-
-    clean_df.set_index('index', inplace=True)
     time_series = clean_df[ORIGINAL_COL]
 
     plt.figure(figsize=(10, 5)) # Added figure size for better readability
     plt.plot(time_series.index, time_series)
     plt.xlabel('Index')
-    plt.ylabel('Passengers X100')
-    plt.title('Passenger Traffic (x100 passengers) Over Time')
-    plt.savefig("pass_traffif.png")
-    plt.close() # Close plot to free memory
-    print("Saved raw data plot to pass_traffif.png")
-
+    plt.ylabel('Global_active_power')
+    plt.title('Global_active_power Over Time')
+    plt.savefig("Global_active_power.png")
+    plt.close()
     time_series_data = clean_df[ORIGINAL_COL]
     time_index = np.arange(len(clean_df))
 
@@ -175,13 +169,9 @@ def part1():
     print("Saved stationary ACF plot to stationary_acf_plot_corrected.png")
     print("\nFinal Series Head (Should look stationary):\n", final_stationary_series.head())
 
-    # --- Part 2: Data Processing and Splitting ---
-
-    # Reload original df to ensure clean state for processing function
-    clean_df_orig, cols = load_and_clean_data(FILE_NAME, resample_freq='D')
+    clean_df_orig, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
  
-    clean_df_orig.set_index('index', inplace=True)
-    
+
     # Step 1: Process and get stationary data and parameters
     stationary_splits, slope, intercept, full_detrended_series = process_data_and_get_stationary_splits(clean_df_orig)
 
