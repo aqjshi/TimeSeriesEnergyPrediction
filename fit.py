@@ -132,27 +132,22 @@ def part1():
     """
     global SEASONAL_PERIOD # Use the global variable so it updates for the whole script
 
-    # --- Part 1: Initial Load and ACF Plotting ---
+    # --- Part 1: Initial Load and Trend Removal ---
     clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='h')
     
-    time_series = clean_df[ORIGINAL_COL]
-
-    plt.figure(figsize=(10, 5)) 
-    plt.plot(time_series.index, time_series)
-    plt.xlabel('Index')
-    plt.ylabel('Global_active_power')
-    plt.title('Global_active_power Over Time')
-    plt.savefig("Global_active_power.png")
-    plt.close()
+    # ... (code for plotting original time series omitted for brevity) ...
     
     time_series_data = clean_df[ORIGINAL_COL]
     time_index = np.arange(len(clean_df))
 
+    # Trend fitting
     slope, intercept, r_value, p_value, std_err = stats.linregress(
         time_index, time_series_data
     )
     linear_trend = slope * time_index + intercept
-    clean_df['detrended_univariate'] = time_series_data - linear_trend # <-- Detrended series is created here
+    # The series used to FIND the seasonal period
+    detrended_series = time_series_data - linear_trend 
+    clean_df['detrended_univariate'] = detrended_series # <-- Store for later use
 
     # --- Dynamic Seasonal Period Detection (NEW LOGIC) ---
     nlags_to_check = 336
@@ -160,7 +155,7 @@ def part1():
 
     # Calculate the period using ACF on the detrended series
     calculated_period = calculate_seasonal_period_from_acf(
-        clean_df['detrended_univariate'], 
+        detrended_series, 
         max_lag=nlags_to_check, 
         skip_lags=skip_lags
     )
@@ -171,7 +166,35 @@ def part1():
     
     print(f"Most likely Seasonal Period Detected: {SEASONAL_PERIOD}") # Now SEASONAL_PERIOD is dynamic
 
-    # Continue with the rest of the script using the detected period
+    # --- PLOT 1: ACF to FIND Seasonal Period ---
+    # Calculate ACF on the detrended series (The search series)
+    acf_values_find, confint_find = acf(
+        detrended_series.dropna(),
+        nlags=nlags_to_check,
+        alpha=0.01,
+        fft=True
+    )
+    N_acf_find = len(detrended_series.dropna())
+    conf_bound_find = 1.96 / np.sqrt(N_acf_find)
+    lags = np.arange(len(acf_values_find))
+
+    plt.figure(figsize=(12, 6))
+    plt.stem(lags, acf_values_find, markerfmt="o", linefmt="red", basefmt="k-")
+    plt.axhspan(-conf_bound_find, conf_bound_find, alpha=0.1, color='red', label='99% Confidence Interval')
+    plt.axvline(SEASONAL_PERIOD, color='green', linestyle='--', linewidth=2, label=f'Detected Period S={SEASONAL_PERIOD}')
+    plt.axhline(0, color='black', linestyle='-', linewidth=0.5)
+    plt.title(f'ACF of Detrended Series (To FIND Seasonality, Peak at S={SEASONAL_PERIOD})')
+    plt.xlabel('Lag (Hours)')
+    plt.ylabel('Autocorrelation')
+    plt.grid(True, linestyle='--', alpha=0.5, axis='y')
+    plt.xlim(-0.5, nlags_to_check + 0.5)
+    plt.tight_layout()
+    plt.savefig('seasonal_acf_plot_finding.png')
+    plt.close()
+    print("Saved ACF plot (to FIND period) to seasonal_acf_plot_finding.png")
+    # ------------------------------------------
+
+    # --- Seasonal Differencing ---
     clean_df['detrended_deseasonalized'] = (
         clean_df['detrended_univariate'].diff(periods=SEASONAL_PERIOD)
     )
@@ -181,8 +204,7 @@ def part1():
     final_stationary_series = clean_df['detrended_deseasonalized'].dropna()
 
     # Calculate ACF on the fully transformed series (for plotting only)
-    # The nlags for this final plot is now derived from the variable
-    nlags=nlags_to_check # Keeping nlags=336 for consistency in the plot
+    nlags=nlags_to_check
     stationary_acf_values, confint = acf(
         final_stationary_series,
         nlags=nlags,
@@ -194,21 +216,22 @@ def part1():
     conf_bound = 1.96 / np.sqrt(N_acf)
     lags = np.arange(len(stationary_acf_values))
 
-    # Plot the new ACF
+    # --- PLOT 2: ACF to VERIFY Stationarity ---
     plt.figure(figsize=(12, 6))
     plt.stem(lags, stationary_acf_values, markerfmt="o", linefmt="blue", basefmt="k-")
     plt.axhspan(-conf_bound, conf_bound, alpha=0.1, color='blue', label='95% Confidence Interval')
+    plt.axvline(SEASONAL_PERIOD, color='orange', linestyle='--', linewidth=2, label=f'Seasonal Lag S={SEASONAL_PERIOD}')
     plt.axhline(0, color='black', linestyle='-', linewidth=0.5)
-    plt.title(f'ACF of Fully Stationary Series (Detrended & Deseasonalized, S={SEASONAL_PERIOD})')
-    plt.xlabel('Lag')
+    plt.title(f'ACF of Fully Stationary Series (To VERIFY Removal, S={SEASONAL_PERIOD})')
+    plt.xlabel('Lag (Hours)')
     plt.ylabel('Autocorrelation')
     plt.grid(True, linestyle='--', alpha=0.5, axis='y')
     plt.xlim(-0.5, nlags + 0.5)
     plt.tight_layout()
-    plt.savefig('stationary_acf_plot_corrected.png')
+    # Note the change in filename to be descriptive of its purpose
+    plt.savefig('stationary_acf_plot_verifying.png') 
     plt.close() # Close plot
-    print("Saved stationary ACF plot to stationary_acf_plot_corrected.png")
-    
+    print("Saved ACF plot (to VERIFY removal) to stationary_acf_plot_verifying.png")
     # Reload original for splitting process
     clean_df_orig, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
 
@@ -447,6 +470,190 @@ def create_trend_covariate(series: TimeSeries) -> TimeSeries:
     return TimeSeries.from_dataframe(trend_df)
 
 
+def part3():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(torch.cuda.is_available())
+    print(f"device: {device}")
+
+    config = {
+        'output_chunk_length': 1,
+        'TRAIN_RATIO': .7,
+        'VAL_RATIO': .2,
+    } 
+    
+    torch.set_float32_matmul_precision('medium')
+    
+
+    run_name = f"forecast_{secrets.token_hex(4)}"
+    
+
+
+    airport_df = pd.read_csv("AirportFootfalls_data.csv").set_index('index')
+    series = TimeSeries.from_dataframe(
+        airport_df.reset_index(), 
+        'index', 
+        ORIGINAL_COL
+    )
+
+    PERIOD = 168 
+    K_FOURIER = 6
+    fourier_covariates = create_fourier_covariates(series, period=PERIOD, K=K_FOURIER)
+    trend_covariate = create_trend_covariate(series)
+    all_covariates = fourier_covariates.stack(trend_covariate)
+
+    # 2. Split Target Series
+    train_series, val_test_series = series.split_before(config['TRAIN_RATIO'])
+    val_split_pos = int(len(val_test_series) * (config['VAL_RATIO'] / (1 - config['TRAIN_RATIO'])))
+    val_split_point_index_value = val_test_series.time_index[val_split_pos]
+    val_series, test_series = val_test_series.split_before(val_split_point_index_value)
+
+    # 3. Split Covariates (at the exact same points as target)
+    train_cov, val_test_cov = all_covariates.split_before(train_series.end_time())
+    val_cov, test_cov = val_test_cov.split_before(val_series.end_time())
+
+
+    print("\n--- Calculating Naive 1-step forecast (Baseline) ---")
+    naive_model = NaiveDrift()
+    naive_model.fit(train_series)
+    
+    naive_val_preds = naive_model.historical_forecasts(
+        val_series,
+        start=val_series.start_time(),
+        verbose=False
+    )
+    naive_test_preds = naive_model.historical_forecasts(
+        test_series,
+        start=test_series.start_time(),
+        verbose=False
+    )
+
+    val_series_aligned = val_series.slice_intersect(naive_val_preds)
+    test_series_aligned = test_series.slice_intersect(naive_test_preds)
+
+    naive_val_rmse = rmse(val_series_aligned, naive_val_preds)
+    naive_val_mae = mae(val_series_aligned, naive_val_preds)
+    naive_val_mse = mse(val_series_aligned, naive_val_preds)
+    naive_test_rmse = rmse(test_series_aligned, naive_test_preds)
+    naive_test_mae = mae(test_series_aligned, naive_test_preds)
+    naive_test_mse = mse(test_series_aligned, naive_test_preds)
+    
+    print(f"Naive Validation RMSE: {naive_val_rmse:.4f}")
+    print(f"Naive Validation MAE:  {naive_val_mae:.4f}")
+    print(f"Naive Validation MSE:  {naive_val_mse:.4f}")
+    print(f"Naive Test RMSE: {naive_test_rmse:.4f}")
+    print(f"Naive Test MAE:  {naive_test_mae:.4f}")
+    print(f"Naive Test MSE:  {naive_test_mse:.4f}")
+
+    # --- 5. AR+FOURIER MODEL (Scaling) ---
+    
+    scaler = Scaler()
+    train_scaled = scaler.fit_transform(train_series)
+    val_scaled = scaler.transform(val_series)
+    test_scaled = scaler.transform(test_series)
+    
+    cov_scaler = Scaler() #SEPARATE scaler
+    train_cov_scaled = cov_scaler.fit_transform(train_cov)
+    val_cov_scaled = cov_scaler.transform(val_cov)
+    test_cov_scaled = cov_scaler.transform(test_cov)
+
+    all_covariates_scaled = train_cov_scaled.append(val_cov_scaled).append(test_cov_scaled)
+    
+    # --- 6. AR+FOURIER MODEL (Training & Prediction) ---
+
+    print("\n--- Training Fourier-AR-Trend model (LinearRegressionModel) ---")
+    fourier_model = LinearRegressionModel(
+        lags=1, 
+        lags_future_covariates=[0],
+        output_chunk_length=1
+    )
+
+    fourier_model.fit(train_scaled, future_covariates=all_covariates_scaled)
+    
+    print("Predicting with Fourier-AR-Trend model...")
+    val_preds_fourier_scaled = fourier_model.predict(
+        n=len(val_scaled),
+        series=train_scaled,
+        future_covariates=all_covariates_scaled, 
+        verbose=False
+    )
+    test_preds_fourier_scaled = fourier_model.predict(
+        n=len(test_scaled),
+        series=train_scaled.append(val_scaled), 
+        future_covariates=all_covariates_scaled, 
+        verbose=False
+    )
+
+    # Unscale final predictions and actuals
+    val_preds_unscaled = scaler.inverse_transform(val_preds_fourier_scaled)
+    val_unscaled = scaler.inverse_transform(val_scaled)
+    
+    preds_unscaled = scaler.inverse_transform(test_preds_fourier_scaled)
+    test_unscaled = scaler.inverse_transform(test_scaled)
+
+
+    final_val_rmse = rmse(val_unscaled, val_preds_unscaled)
+    final_val_mae = mae(val_unscaled, val_preds_unscaled)
+    final_val_mse = mse(val_unscaled, val_preds_unscaled)
+    
+    final_test_rmse = rmse(test_unscaled, preds_unscaled)
+    final_test_mae = mae(test_unscaled, preds_unscaled)
+    final_test_mse = mse(test_unscaled, preds_unscaled)
+
+
+    all_actuals = val_unscaled.append(test_unscaled)
+    all_predictions = val_preds_unscaled.append(preds_unscaled)
+    
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    csv_filename = os.path.join(output_dir, f"{run_name}.csv")
+    print(f"\nSaving combined predictions and actuals to {csv_filename}...")
+    
+    ACTUAL_COL_NAME = ORIGINAL_COL 
+    PREDICTED_COL_NAME = 'Predicted_Footfalls'
+
+    df_actuals = all_actuals.to_dataframe()
+    df_predictions = all_predictions.to_dataframe().rename(
+        columns={ACTUAL_COL_NAME: PREDICTED_COL_NAME}
+    )
+    results_df = pd.concat([df_actuals, df_predictions], axis=1)
+
+    val_end_date = val_unscaled.end_time()
+    results_df['Data_Split'] = np.where(results_df.index <= val_end_date, 'Validation', 'Test')
+    
+    results_df.to_csv(csv_filename, index_label='index')
+
+    plot_filename = os.path.join(output_dir, f"{run_name}.png")
+    print(f"Generating and saving plot to {plot_filename}...")
+    
+    plt.figure(figsize=(14, 6))
+    
+    val_df = results_df[results_df['Data_Split'] == 'Validation']
+    plt.plot(val_df.index, val_df[ACTUAL_COL_NAME], label='Validation Actual', color='tab:blue', linewidth=2)
+    plt.plot(val_df.index, val_df[PREDICTED_COL_NAME], label='Validation Forecast', color='tab:orange', linestyle='--', linewidth=1.5)
+    
+    test_df = results_df[results_df['Data_Split'] == 'Test']
+    plt.plot(test_df.index, test_df[ACTUAL_COL_NAME], label='Test Actual', color='tab:green', linewidth=2)
+    plt.plot(test_df.index, test_df[PREDICTED_COL_NAME], label='Test Forecast', color='tab:red', linestyle='--', linewidth=1)
+    
+    plt.title('Footfalls Forecast (Fourier-AR-Trend Model)')
+    plt.xlabel('Index')
+    plt.ylabel(ACTUAL_COL_NAME)
+    plt.legend()
+    plt.grid(True, which='both', linestyle=':', alpha=0.6)
+    plt.tight_layout()
+    plt.savefig(plot_filename)
+    plt.close() 
+    
+    print("\n--- Final Model Metrics (AR-Fourier-Trend) ---")
+    print(f"Final Validation RMSE: {final_val_rmse:.4f}")
+    print(f"Final Validation MAE:  {final_val_mae:.4f}")
+    print(f"Final Validation MSE:  {final_val_mse:.4f}")
+    print(f"Final Test RMSE: {final_test_rmse:.4f}")
+    print(f"Final Test MAE:  {final_test_mae:.4f}")
+    print(f"Final Test MSE:  {final_test_mse:.4f}")
+    
+    print(f"\n--- Process Complete ---")
 
 
 if __name__ == "__main__":
@@ -455,194 +662,6 @@ if __name__ == "__main__":
     # part3()
     # part4()
 
-
-
-
-# def part3():
-    
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     print(torch.cuda.is_available())
-#     print(f"device: {device}")
-
-#     config = {
-#         'output_chunk_length': 1,
-#         'TRAIN_RATIO': .7,
-#         'VAL_RATIO': .2,
-#     } 
-    
-#     torch.set_float32_matmul_precision('medium')
-    
-
-#     run_name = f"forecast_{secrets.token_hex(4)}"
-    
-
-
-#     airport_df = pd.read_csv("AirportFootfalls_data.csv").set_index('index')
-#     series = TimeSeries.from_dataframe(
-#         airport_df.reset_index(), 
-#         'index', 
-#         ORIGINAL_COL
-#     )
-
-#     PERIOD = 753 
-#     K_FOURIER = 5
-#     fourier_covariates = create_fourier_covariates(series, period=PERIOD, K=K_FOURIER)
-#     trend_covariate = create_trend_covariate(series)
-#     all_covariates = fourier_covariates.stack(trend_covariate)
-
-#     # 2. Split Target Series
-#     train_series, val_test_series = series.split_before(config['TRAIN_RATIO'])
-#     val_split_pos = int(len(val_test_series) * (config['VAL_RATIO'] / (1 - config['TRAIN_RATIO'])))
-#     val_split_point_index_value = val_test_series.time_index[val_split_pos]
-#     val_series, test_series = val_test_series.split_before(val_split_point_index_value)
-
-#     # 3. Split Covariates (at the exact same points as target)
-#     train_cov, val_test_cov = all_covariates.split_before(train_series.end_time())
-#     val_cov, test_cov = val_test_cov.split_before(val_series.end_time())
-
-
-#     print("\n--- Calculating Naive 1-step forecast (Baseline) ---")
-#     naive_model = NaiveDrift()
-#     naive_model.fit(train_series)
-    
-#     naive_val_preds = naive_model.historical_forecasts(
-#         val_series,
-#         start=val_series.start_time(),
-#         verbose=False
-#     )
-#     naive_test_preds = naive_model.historical_forecasts(
-#         test_series,
-#         start=test_series.start_time(),
-#         verbose=False
-#     )
-
-#     val_series_aligned = val_series.slice_intersect(naive_val_preds)
-#     test_series_aligned = test_series.slice_intersect(naive_test_preds)
-
-#     naive_val_rmse = rmse(val_series_aligned, naive_val_preds)
-#     naive_val_mae = mae(val_series_aligned, naive_val_preds)
-#     naive_val_mse = mse(val_series_aligned, naive_val_preds)
-#     naive_test_rmse = rmse(test_series_aligned, naive_test_preds)
-#     naive_test_mae = mae(test_series_aligned, naive_test_preds)
-#     naive_test_mse = mse(test_series_aligned, naive_test_preds)
-    
-#     print(f"Naive Validation RMSE: {naive_val_rmse:.4f}")
-#     print(f"Naive Validation MAE:  {naive_val_mae:.4f}")
-#     print(f"Naive Validation MSE:  {naive_val_mse:.4f}")
-#     print(f"Naive Test RMSE: {naive_test_rmse:.4f}")
-#     print(f"Naive Test MAE:  {naive_test_mae:.4f}")
-#     print(f"Naive Test MSE:  {naive_test_mse:.4f}")
-
-#     # --- 5. AR+FOURIER MODEL (Scaling) ---
-    
-#     scaler = Scaler()
-#     train_scaled = scaler.fit_transform(train_series)
-#     val_scaled = scaler.transform(val_series)
-#     test_scaled = scaler.transform(test_series)
-    
-#     cov_scaler = Scaler() #SEPARATE scaler
-#     train_cov_scaled = cov_scaler.fit_transform(train_cov)
-#     val_cov_scaled = cov_scaler.transform(val_cov)
-#     test_cov_scaled = cov_scaler.transform(test_cov)
-
-#     all_covariates_scaled = train_cov_scaled.append(val_cov_scaled).append(test_cov_scaled)
-    
-#     # --- 6. AR+FOURIER MODEL (Training & Prediction) ---
-
-#     print("\n--- Training Fourier-AR-Trend model (LinearRegressionModel) ---")
-#     fourier_model = LinearRegressionModel(
-#         lags=1, 
-#         lags_future_covariates=[0],
-#         output_chunk_length=1
-#     )
-
-#     fourier_model.fit(train_scaled, future_covariates=all_covariates_scaled)
-    
-#     print("Predicting with Fourier-AR-Trend model...")
-#     val_preds_fourier_scaled = fourier_model.predict(
-#         n=len(val_scaled),
-#         series=train_scaled,
-#         future_covariates=all_covariates_scaled, 
-#         verbose=False
-#     )
-#     test_preds_fourier_scaled = fourier_model.predict(
-#         n=len(test_scaled),
-#         series=train_scaled.append(val_scaled), 
-#         future_covariates=all_covariates_scaled, 
-#         verbose=False
-#     )
-
-#     # Unscale final predictions and actuals
-#     val_preds_unscaled = scaler.inverse_transform(val_preds_fourier_scaled)
-#     val_unscaled = scaler.inverse_transform(val_scaled)
-    
-#     preds_unscaled = scaler.inverse_transform(test_preds_fourier_scaled)
-#     test_unscaled = scaler.inverse_transform(test_scaled)
-
-
-#     final_val_rmse = rmse(val_unscaled, val_preds_unscaled)
-#     final_val_mae = mae(val_unscaled, val_preds_unscaled)
-#     final_val_mse = mse(val_unscaled, val_preds_unscaled)
-    
-#     final_test_rmse = rmse(test_unscaled, preds_unscaled)
-#     final_test_mae = mae(test_unscaled, preds_unscaled)
-#     final_test_mse = mse(test_unscaled, preds_unscaled)
-
-
-#     all_actuals = val_unscaled.append(test_unscaled)
-#     all_predictions = val_preds_unscaled.append(preds_unscaled)
-    
-#     output_dir = "output"
-#     os.makedirs(output_dir, exist_ok=True)
-    
-#     csv_filename = os.path.join(output_dir, f"{run_name}.csv")
-#     print(f"\nSaving combined predictions and actuals to {csv_filename}...")
-    
-#     ACTUAL_COL_NAME = ORIGINAL_COL 
-#     PREDICTED_COL_NAME = 'Predicted_Footfalls'
-
-#     df_actuals = all_actuals.to_dataframe()
-#     df_predictions = all_predictions.to_dataframe().rename(
-#         columns={ACTUAL_COL_NAME: PREDICTED_COL_NAME}
-#     )
-#     results_df = pd.concat([df_actuals, df_predictions], axis=1)
-
-#     val_end_date = val_unscaled.end_time()
-#     results_df['Data_Split'] = np.where(results_df.index <= val_end_date, 'Validation', 'Test')
-    
-#     results_df.to_csv(csv_filename, index_label='index')
-
-#     plot_filename = os.path.join(output_dir, f"{run_name}.png")
-#     print(f"Generating and saving plot to {plot_filename}...")
-    
-#     plt.figure(figsize=(14, 6))
-    
-#     val_df = results_df[results_df['Data_Split'] == 'Validation']
-#     plt.plot(val_df.index, val_df[ACTUAL_COL_NAME], label='Validation Actual', color='tab:blue', linewidth=2)
-#     plt.plot(val_df.index, val_df[PREDICTED_COL_NAME], label='Validation Forecast', color='tab:orange', linestyle='--', linewidth=1.5)
-    
-#     test_df = results_df[results_df['Data_Split'] == 'Test']
-#     plt.plot(test_df.index, test_df[ACTUAL_COL_NAME], label='Test Actual', color='tab:green', linewidth=2)
-#     plt.plot(test_df.index, test_df[PREDICTED_COL_NAME], label='Test Forecast', color='tab:red', linestyle='--', linewidth=1)
-    
-#     plt.title('Footfalls Forecast (Fourier-AR-Trend Model)')
-#     plt.xlabel('Index')
-#     plt.ylabel(ACTUAL_COL_NAME)
-#     plt.legend()
-#     plt.grid(True, which='both', linestyle=':', alpha=0.6)
-#     plt.tight_layout()
-#     plt.savefig(plot_filename)
-#     plt.close() 
-    
-#     print("\n--- Final Model Metrics (AR-Fourier-Trend) ---")
-#     print(f"Final Validation RMSE: {final_val_rmse:.4f}")
-#     print(f"Final Validation MAE:  {final_val_mae:.4f}")
-#     print(f"Final Validation MSE:  {final_val_mse:.4f}")
-#     print(f"Final Test RMSE: {final_test_rmse:.4f}")
-#     print(f"Final Test MAE:  {final_test_mae:.4f}")
-#     print(f"Final Test MSE:  {final_test_mse:.4f}")
-    
-#     print(f"\n--- Process Complete ---")
 
 
 # def create_fourier_covariates(series: TimeSeries, period: float, K: int) -> TimeSeries:
