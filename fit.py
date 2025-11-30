@@ -19,11 +19,16 @@ from darts.dataprocessing.transformers import Scaler
 from darts.metrics import mae, mse, rmse
 from darts.models import BlockRNNModel, LinearRegressionModel, NaiveDrift
 from load_and_visualize import   load_and_clean_data  
+
+from scipy.signal import periodogram # <--- Add this import at the top
+
+
+
 FILE_NAME = "individual_household_electric_power_consumption.csv"
 
 ORIGINAL_COL = 'Global_active_power'
-STATIONARY_COL = 'detrended_deseasonalized_753'
-SEASONAL_PERIOD = 753
+STATIONARY_COL = 'detrended_deseasonalized'
+SEASONAL_PERIOD = 0
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.20
 
@@ -105,23 +110,25 @@ def process_data_and_get_stationary_splits(
 
     return stationary_splits, slope, intercept, full_detrended_series
 
-
 def part1():
     """
     Main function to run the time series analysis pipeline.
     """
+    global SEASONAL_PERIOD # Use the global variable so it updates for the whole script
+
     # --- Part 1: Initial Load and ACF Plotting ---
     clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
     
     time_series = clean_df[ORIGINAL_COL]
 
-    plt.figure(figsize=(10, 5)) # Added figure size for better readability
+    plt.figure(figsize=(10, 5)) 
     plt.plot(time_series.index, time_series)
     plt.xlabel('Index')
     plt.ylabel('Global_active_power')
     plt.title('Global_active_power Over Time')
     plt.savefig("Global_active_power.png")
     plt.close()
+    
     time_series_data = clean_df[ORIGINAL_COL]
     time_index = np.arange(len(clean_df))
 
@@ -131,15 +138,50 @@ def part1():
     linear_trend = slope * time_index + intercept
     clean_df['detrended_univariate'] = time_series_data - linear_trend
 
-    seasonal_period = SEASONAL_PERIOD # Use constant
-    clean_df['detrended_deseasonalized_753'] = (
-        clean_df['detrended_univariate'].diff(periods=seasonal_period)
+    # ------------------------------------------------------------------
+    # NEW: SPECTRAL ANALYSIS TO DETECT SEASONALITY
+    # ------------------------------------------------------------------
+    print("Performing Spectral Analysis...")
+    
+    # 1. Get the detrended series (drop NaNs if any exist)
+    data_for_spectrum = clean_df['detrended_univariate'].dropna().values
+    
+    # 2. Compute the Periodogram (Frequencies vs Power)
+    frequencies, spectrum = periodogram(data_for_spectrum)
+    
+    # 3. Apply Offset: specific request to offset by 24.
+    # We zero out the first 24 components (low frequencies/long periods) 
+    # to avoid picking up residual trends or very long cycles.
+    spectrum[0:24] = 0
+    
+    # 4. Find the index with the maximum power
+    max_idx = np.argmax(spectrum)
+    dominant_freq = frequencies[max_idx]
+    
+    # 5. Convert Frequency to Period (T = 1 / f)
+    # We define a local variable 'seasonal_period' and update the Global
+    if dominant_freq > 0:
+        calculated_period = int(round(1 / dominant_freq))
+    else:
+        calculated_period = 1 # Fallback if frequency is 0 (unlikely after offset)
+
+    # 6. Update the Global Variable
+    SEASONAL_PERIOD = calculated_period
+    
+    # 7. Print the result
+    print(f"Spectral Analysis Complete. Offset: 24.")
+    print(f"Most likely Seasonal Period Detected: {SEASONAL_PERIOD}")
+    # ------------------------------------------------------------------
+
+    # Continue with the rest of the script using the detected period
+    clean_df['detrended_deseasonalized'] = (
+        clean_df['detrended_univariate'].diff(periods=SEASONAL_PERIOD)
     )
-    print(f"Seasonality (period={seasonal_period}) removed using Seasonal Differencing.")
+    print(f"Seasonality (period={SEASONAL_PERIOD}) removed using Seasonal Differencing.")
 
     # Drop the NaNs created by the differencing step for the ACF calculation
-    final_stationary_series = clean_df['detrended_deseasonalized_753'].dropna()
-    nlags = 2 * seasonal_period # 1506
+    final_stationary_series = clean_df['detrended_deseasonalized'].dropna()
+    nlags = min(2 * SEASONAL_PERIOD, len(final_stationary_series) // 2 - 1) # Safety check for nlags
 
     # Calculate ACF on the fully transformed series
     stationary_acf_values, confint = acf(
@@ -158,7 +200,7 @@ def part1():
     plt.stem(lags, stationary_acf_values, markerfmt="o", linefmt="blue", basefmt="k-")
     plt.axhspan(-conf_bound, conf_bound, alpha=0.1, color='blue', label='95% Confidence Interval')
     plt.axhline(0, color='black', linestyle='-', linewidth=0.5)
-    plt.title('ACF of Fully Stationary Series (Detrended & Deseasonalized, S=753)')
+    plt.title(f'ACF of Fully Stationary Series (Detrended & Deseasonalized, S={SEASONAL_PERIOD})')
     plt.xlabel('Lag')
     plt.ylabel('Autocorrelation')
     plt.grid(True, linestyle='--', alpha=0.5, axis='y')
@@ -167,12 +209,12 @@ def part1():
     plt.savefig('stationary_acf_plot_corrected.png')
     plt.close() # Close plot
     print("Saved stationary ACF plot to stationary_acf_plot_corrected.png")
-    print("\nFinal Series Head (Should look stationary):\n", final_stationary_series.head())
-
+    
+    # Reload original for splitting process
     clean_df_orig, cols = load_and_clean_data(FILE_NAME, resample_freq='H')
- 
 
     # Step 1: Process and get stationary data and parameters
+    # Note: process_data_and_get_stationary_splits uses the global SEASONAL_PERIOD we just set
     stationary_splits, slope, intercept, full_detrended_series = process_data_and_get_stationary_splits(clean_df_orig)
 
     sarima_params = {
@@ -195,18 +237,12 @@ def part1():
     N_test = int(len(clean_df_orig))
     print(f"\nSplit Indices: Train end={N_train}, Val end={N_val}, Test end={N_test}")
 
-    # You don't seem to use these original splits, but I'll leave them
-    train_original_data = clean_df_orig[ORIGINAL_COL].iloc[0:N_train]
-    val_original_data = clean_df_orig[ORIGINAL_COL].iloc[N_train:N_val]
-    test_original_data = clean_df_orig[ORIGINAL_COL].iloc[N_val:N_test]
-
     print("\n--- Summary of Transformations ---")
     print(f"Trend Fit: Slope={slope:.4f}, Intercept={intercept:.4f}")
     print(f"Seasonality Period: {SEASONAL_PERIOD}")
     print(f"Train Usable Samples: {len(stationary_splits['train'])} (Loss: {N_train - len(stationary_splits['train'])})")
     print(f"Val Usable Samples: {len(stationary_splits['val'])}")
     print(f"Test Usable Samples: {len(stationary_splits['test'])}")
-
 
 if __name__ == "__main__":
     part1()
