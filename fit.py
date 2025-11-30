@@ -56,7 +56,7 @@ def process_data_and_get_stationary_splits(
     """Splits data, fits linear trend on train, transforms all sets, and returns
     stationary splits, trend parameters, and the full detrended series."""
 
-    time_series_data = airport_df['Passenger Traffic (x100 passengers)']
+    time_series_data = airport_df[ORIGINAL_COL]
     N = len(time_series_data)
     train_end_index = int(N * TRAIN_RATIO)
     val_end_index = int(N * (TRAIN_RATIO + VAL_RATIO))
@@ -116,8 +116,8 @@ def part1():
     clean_df, cols = load_and_clean_data(FILE_NAME, resample_freq='D')
     
 
-    airport_df.set_index('index', inplace=True)
-    time_series = airport_df['Passenger Traffic (x100 passengers)']
+    clean_df.set_index('index', inplace=True)
+    time_series = clean_df[ORIGINAL_COL]
 
     plt.figure(figsize=(10, 5)) # Added figure size for better readability
     plt.plot(time_series.index, time_series)
@@ -128,23 +128,23 @@ def part1():
     plt.close() # Close plot to free memory
     print("Saved raw data plot to pass_traffif.png")
 
-    time_series_data = airport_df['Passenger Traffic (x100 passengers)']
-    time_index = np.arange(len(airport_df))
+    time_series_data = clean_df[ORIGINAL_COL]
+    time_index = np.arange(len(clean_df))
 
     slope, intercept, r_value, p_value, std_err = stats.linregress(
         time_index, time_series_data
     )
     linear_trend = slope * time_index + intercept
-    airport_df['detrended_univariate'] = time_series_data - linear_trend
+    clean_df['detrended_univariate'] = time_series_data - linear_trend
 
     seasonal_period = SEASONAL_PERIOD # Use constant
-    airport_df['detrended_deseasonalized_753'] = (
-        airport_df['detrended_univariate'].diff(periods=seasonal_period)
+    clean_df['detrended_deseasonalized_753'] = (
+        clean_df['detrended_univariate'].diff(periods=seasonal_period)
     )
     print(f"Seasonality (period={seasonal_period}) removed using Seasonal Differencing.")
 
     # Drop the NaNs created by the differencing step for the ACF calculation
-    final_stationary_series = airport_df['detrended_deseasonalized_753'].dropna()
+    final_stationary_series = clean_df['detrended_deseasonalized_753'].dropna()
     nlags = 2 * seasonal_period # 1506
 
     # Calculate ACF on the fully transformed series
@@ -178,11 +178,12 @@ def part1():
     # --- Part 2: Data Processing and Splitting ---
 
     # Reload original df to ensure clean state for processing function
-    airport_df_orig = pd.read_csv("AirportFootfalls_data.csv")
-    airport_df_orig.set_index('index', inplace=True)
+    clean_df_orig, cols = load_and_clean_data(FILE_NAME, resample_freq='D')
+ 
+    clean_df_orig.set_index('index', inplace=True)
     
     # Step 1: Process and get stationary data and parameters
-    stationary_splits, slope, intercept, full_detrended_series = process_data_and_get_stationary_splits(airport_df_orig)
+    stationary_splits, slope, intercept, full_detrended_series = process_data_and_get_stationary_splits(clean_df_orig)
 
     sarima_params = {
         "slope": slope,
@@ -199,15 +200,15 @@ def part1():
     print(f"\nSaved SARIMA parameters to {param_file_path}")
 
     # --- Part 3: Summary Printouts ---
-    N_train = int(len(airport_df_orig) * TRAIN_RATIO)
-    N_val = int(len(airport_df_orig) * VAL_RATIO + N_train)
-    N_test = int(len(airport_df_orig))
+    N_train = int(len(clean_df_orig) * TRAIN_RATIO)
+    N_val = int(len(clean_df_orig) * VAL_RATIO + N_train)
+    N_test = int(len(clean_df_orig))
     print(f"\nSplit Indices: Train end={N_train}, Val end={N_val}, Test end={N_test}")
 
     # You don't seem to use these original splits, but I'll leave them
-    train_original_data = airport_df_orig['Passenger Traffic (x100 passengers)'].iloc[0:N_train]
-    val_original_data = airport_df_orig['Passenger Traffic (x100 passengers)'].iloc[N_train:N_val]
-    test_original_data = airport_df_orig['Passenger Traffic (x100 passengers)'].iloc[N_val:N_test]
+    train_original_data = clean_df_orig[ORIGINAL_COL].iloc[0:N_train]
+    val_original_data = clean_df_orig[ORIGINAL_COL].iloc[N_train:N_val]
+    test_original_data = clean_df_orig[ORIGINAL_COL].iloc[N_val:N_test]
 
     print("\n--- Summary of Transformations ---")
     print(f"Trend Fit: Slope={slope:.4f}, Intercept={intercept:.4f}")
@@ -304,7 +305,7 @@ if __name__ == "__main__":
 #     """
 #     # --- 1. Load Data and Parameters ---
 #     airport_df = pd.read_csv("AirportFootfalls_data.csv").set_index('index')
-#     original_series = airport_df['Passenger Traffic (x100 passengers)']
+#     original_series = airport_df[ORIGINAL_COL]
 
 #     with open("sarima_params.json", 'r') as f:
 #         sarima_params = json.load(f)
@@ -456,7 +457,7 @@ if __name__ == "__main__":
 #     series = TimeSeries.from_dataframe(
 #         airport_df.reset_index(), 
 #         'index', 
-#         'Passenger Traffic (x100 passengers)'
+#         ORIGINAL_COL
 #     )
 
 #     PERIOD = 753 
@@ -573,7 +574,7 @@ if __name__ == "__main__":
 #     csv_filename = os.path.join(output_dir, f"{run_name}.csv")
 #     print(f"\nSaving combined predictions and actuals to {csv_filename}...")
     
-#     ACTUAL_COL_NAME = 'Passenger Traffic (x100 passengers)' 
+#     ACTUAL_COL_NAME = ORIGINAL_COL 
 #     PREDICTED_COL_NAME = 'Predicted_Footfalls'
 
 #     df_actuals = all_actuals.to_dataframe()
@@ -679,7 +680,7 @@ if __name__ == "__main__":
 #     series = TimeSeries.from_dataframe(
 #         airport_df.reset_index(), 
 #         'index', 
-#         'Passenger Traffic (x100 passengers)'
+#         ORIGINAL_COL
 #     )
 
 #     PERIOD = 753 
@@ -874,7 +875,7 @@ if __name__ == "__main__":
     
 #     print(f"Saving combined predictions and actuals to {output_dir}/predictions.csv...")
     
-#     ACTUAL_COL_NAME = 'Passenger Traffic (x100 passengers)' 
+#     ACTUAL_COL_NAME = ORIGINAL_COL 
 #     PREDICTED_COL_NAME = 'Predicted_Footfalls'
 
 #     df_actuals = all_actuals.to_dataframe()
